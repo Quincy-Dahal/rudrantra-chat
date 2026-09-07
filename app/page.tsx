@@ -3,7 +3,7 @@
 import Image from "next/image";
 import { useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { Copy, Check, ThumbsUp, ThumbsDown, X, RotateCcw } from "lucide-react";
+import { Copy, Check, ThumbsUp, ThumbsDown, X, RotateCcw, Send } from "lucide-react";
 
 type Message = {
   id?: number;
@@ -347,21 +347,7 @@ export default function Home() {
             disabled={isLoading}
             className="flex h-10 w-10 items-center justify-center rounded-full bg-[#C6A15B] text-[#651216] disabled:opacity-50"
           >
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              strokegit ="currentColor"
-              strokeWidth="2"
-            >
-              <path d="M22 2L11 13" strokeLinecap="round" strokeLinejoin="round" />
-              <path
-                d="M22 2L15 22L11 13L2 9L22 2Z"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
+            <Send size={18} />
           </button>
         </div>
 
