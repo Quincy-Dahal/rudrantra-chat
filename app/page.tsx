@@ -352,7 +352,7 @@ export default function Home() {
               height="18"
               viewBox="0 0 24 24"
               fill="none"
-              stroke="currentColor"
+              strokegit ="currentColor"
               strokeWidth="2"
             >
               <path d="M22 2L11 13" strokeLinecap="round" strokeLinejoin="round" />
