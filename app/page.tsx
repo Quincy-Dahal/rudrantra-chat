@@ -1,13 +1,16 @@
 "use client";
 
 import Image from "next/image";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { Copy, Check, ThumbsUp, ThumbsDown, X, RotateCcw } from "lucide-react";
 
 type Message = {
+  id?: number;
   role: "user" | "assistant";
   content: string;
   time: string;
+  feedback?: "up" | "down" | null;
 };
 
 const QUICK_ACTIONS = [
@@ -27,24 +30,34 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
-      content: "Namaste! I'm Gyaan. Ask me anything about Rudraksha beads, their meanings, and our products.",
+      content:
+        "Namaste! I'm Gyaan. Ask me anything about Rudraksha beads, their meanings, and our products.",
       time: formatTime(),
     },
   ]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [wasCancelled, setWasCancelled] = useState(false);
+  const [lastUserMessage, setLastUserMessage] = useState<string | null>(null);
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   async function handleSend(overrideText?: string) {
     const text = overrideText ?? input;
     if (!text.trim() || isLoading) return;
 
+    setWasCancelled(false);
+    setLastUserMessage(text);
     setMessages((prev) => [
       ...prev,
       { role: "user", content: text, time: formatTime() },
     ]);
     setInput("");
     setIsLoading(true);
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
     try {
       const response = await fetch(
@@ -54,10 +67,9 @@ export default function Home() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             message: text,
-            // Only include conversation_id once we have one - the first
-            // message in a fresh visit should start a new conversation.
             ...(conversationId ? { conversation_id: conversationId } : {}),
           }),
+          signal: controller.signal,
         }
       );
 
@@ -69,21 +81,90 @@ export default function Home() {
       setConversationId(data.conversation_id);
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: data.reply, time: formatTime() },
-      ]);
-    } catch (error) {
-      console.error("Failed to reach Gyaan backend:", error);
-      setMessages((prev) => [
-        ...prev,
         {
+          id: data.message_id,
           role: "assistant",
-          content:
-            "Sorry, I'm having trouble connecting right now. Please try again in a moment.",
+          content: data.reply,
           time: formatTime(),
+          feedback: null,
         },
       ]);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        // User cancelled on purpose - show a retry affordance, not an error.
+        setWasCancelled(true);
+      } else {
+        console.error("Failed to reach Gyaan backend:", error);
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content:
+              "Sorry, I'm having trouble connecting right now. Please try again in a moment.",
+            time: formatTime(),
+          },
+        ]);
+      }
     } finally {
       setIsLoading(false);
+      abortControllerRef.current = null;
+    }
+  }
+
+  function handleCancel() {
+    abortControllerRef.current?.abort();
+  }
+
+  function handleRetry() {
+    if (!lastUserMessage) return;
+    // Drop the message we're retrying so handleSend can re-add it cleanly,
+    // instead of ending up with two copies of the same question.
+    setMessages((prev) => prev.slice(0, -1));
+    setWasCancelled(false);
+    handleSend(lastUserMessage);
+  }
+
+  async function handleCopy(text: string, index: number) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedIndex(index);
+      setTimeout(() => setCopiedIndex(null), 1500);
+    } catch (error) {
+      console.error("Failed to copy:", error);
+    }
+  }
+
+  async function handleFeedback(index: number, value: "up" | "down") {
+    const target = messages[index];
+    if (!target.id) return; // shouldn't happen for a real bot reply, but be safe
+
+    const newValue = target.feedback === value ? null : value;
+
+    // Update immediately so the UI feels instant, then confirm with the server.
+    setMessages((prev) =>
+      prev.map((m, i) => (i === index ? { ...m, feedback: newValue } : m))
+    );
+
+    try {
+      const response = await fetch(
+        `${API_URL}/api/messages/${target.id}/feedback/`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ feedback: newValue }),
+        }
+      );
+      if (!response.ok) {
+        throw new Error(`Server returned ${response.status}`);
+      }
+    } catch (error) {
+      console.error("Failed to save feedback:", error);
+      // Revert the optimistic update since it didn't actually save.
+      setMessages((prev) =>
+        prev.map((m, i) =>
+          i === index ? { ...m, feedback: target.feedback } : m
+        )
+      );
     }
   }
 
@@ -121,7 +202,9 @@ export default function Home() {
           {messages.map((m, i) => (
             <div
               key={i}
-              className={`flex flex-col ${m.role === "user" ? "items-end" : "items-start"}`}
+              className={`flex flex-col ${
+                m.role === "user" ? "items-end" : "items-start"
+              }`}
             >
               <div
                 className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm ${
@@ -145,9 +228,7 @@ export default function Home() {
                         {children}
                       </ol>
                     ),
-                    li: ({ children }) => (
-                      <li className="mb-0.5">{children}</li>
-                    ),
+                    li: ({ children }) => <li className="mb-0.5">{children}</li>,
                     strong: ({ children }) => (
                       <strong className="font-semibold">{children}</strong>
                     ),
@@ -156,14 +237,83 @@ export default function Home() {
                   {m.content}
                 </ReactMarkdown>
               </div>
-              <span className="mt-1 px-1 text-[10px] text-[#a89a8a]">{m.time}</span>
+
+              <div className="mt-1 flex items-center gap-2 px-1">
+                <span className="text-[10px] text-[#a89a8a]">{m.time}</span>
+
+                {m.role === "assistant" && (
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => handleCopy(m.content, i)}
+                      title="Copy"
+                      className="rounded p-1 text-[#a89a8a] hover:bg-[#F0E6D8] hover:text-[#651216]"
+                    >
+                      {copiedIndex === i ? (
+                        <Check size={12} />
+                      ) : (
+                        <Copy size={12} />
+                      )}
+                    </button>
+                    <button
+                      onClick={() => handleFeedback(i, "up")}
+                      title="Good response"
+                      className={`rounded p-1 hover:bg-[#F0E6D8] ${
+                        m.feedback === "up"
+                          ? "text-[#9B1B1F]"
+                          : "text-[#a89a8a] hover:text-[#651216]"
+                      }`}
+                    >
+                      <ThumbsUp
+                        size={12}
+                        fill={m.feedback === "up" ? "currentColor" : "none"}
+                      />
+                    </button>
+                    <button
+                      onClick={() => handleFeedback(i, "down")}
+                      title="Poor response"
+                      className={`rounded p-1 hover:bg-[#F0E6D8] ${
+                        m.feedback === "down"
+                          ? "text-[#9B1B1F]"
+                          : "text-[#a89a8a] hover:text-[#651216]"
+                      }`}
+                    >
+                      <ThumbsDown
+                        size={12}
+                        fill={m.feedback === "down" ? "currentColor" : "none"}
+                      />
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           ))}
 
           {isLoading && (
             <div className="flex flex-col items-start">
-              <div className="rounded-2xl border border-[#f0e6d8] bg-white px-4 py-2.5 text-sm text-[#651216]">
-                Thinking...
+              <div className="flex items-center gap-2 rounded-2xl border border-[#f0e6d8] bg-white px-4 py-2.5 text-sm text-[#651216]">
+                <span>Thinking...</span>
+                <button
+                  onClick={handleCancel}
+                  title="Cancel"
+                  className="rounded-full p-0.5 text-[#a89a8a] hover:bg-[#F0E6D8] hover:text-[#9B1B1F]"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {wasCancelled && !isLoading && (
+            <div className="flex flex-col items-start">
+              <div className="flex items-center gap-2 rounded-2xl border border-[#e8ddd0] bg-[#F0E6D8] px-4 py-2.5 text-sm text-[#651216]">
+                <span>Request cancelled.</span>
+                <button
+                  onClick={handleRetry}
+                  className="flex items-center gap-1 rounded-full border border-[#C6A15B] px-2 py-0.5 text-xs font-medium text-[#9B1B1F] hover:bg-white"
+                >
+                  <RotateCcw size={11} />
+                  Retry
+                </button>
               </div>
             </div>
           )}
